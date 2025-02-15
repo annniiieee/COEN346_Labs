@@ -1,8 +1,7 @@
 #include <iostream>
 #include <thread>
-#include <mutex>
 #include <chrono>
-#include <vector>
+#include <fstream>
 using namespace std;
 using namespace std::chrono;
 
@@ -82,20 +81,51 @@ void printArray(int arr[], int size)
     for (int i = 0; i < size; i++)
         cout << arr[i] <<"\n";
 }
+
 int main()
 {
-    const int size = 10000;
-    int arr[size];
+    int size = 0;
 
-    // Create random values
-    for (int i = size - 1; i >= 0; i--)
-        arr[i] = rand() % size;
+    // Open input file and count number of lines as size of array
+    ifstream readFile("input.txt");
+    if (!readFile)
+    {
+        cout << "File not found" << endl;
+        exit(0);
+    }
+    string line;
+    while (getline(readFile,line))
+        size++;
 
+    // Reset EOF flag and set filestream cursor back to beginning
+    readFile.clear();
+    readFile.seekg(0,ios::beg);
+
+    int arr[size];  // Array to hold data
+
+    // Read data from file into array
+    for (int i = 0; i < size; i++)
+        if (!readFile.eof())
+            readFile >> arr[i];
+    
+    readFile.close();
 
     // Mergesort execution and timer
     auto t1 = high_resolution_clock::now();
     mergeSort(arr,0,size - 1);
     auto t2 = high_resolution_clock::now();
-
+    
     cout << duration<double, std::milli>(t2 - t1).count() << "ms\n";
+
+    // Write sorted array to file
+    ofstream writeFile("output.txt");
+    if (!writeFile)
+    {
+        cout << "File not found" << endl;
+        exit(0);
+    }
+    for (int i = 0; i < size; i++)
+        writeFile << arr[i] << endl;
+    
+    writeFile.close();
 }
