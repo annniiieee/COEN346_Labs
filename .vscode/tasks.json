@@ -7,7 +7,9 @@
       "args": [
         "-fdiagnostics-color=always",
         "-g",
-        "${file}",
+        "${fileDirname}/*.cpp", //gets all cpp files in the current directory
+        //g++ '.\Assignment 4\Question 2\testemployee.cpp' '.\Assignment 4\Question 2\employee.cpp' (compiles all cpp files together)
+        // -o run creates an output file called run.exe    
         "-o",
         "${fileDirname}\\${fileBasenameNoExtension}.exe"
       ],

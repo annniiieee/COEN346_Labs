@@ -1,0 +1,6 @@
+Time Quantum: 4
+User A Number of Processes: 2
+User A Process 0 Ready Time: 4, Service Time: 3
+User A Process 1 Ready Time: 1, Service Time: 5
+User B Number of Processes: 1
+User B Process 0 Ready Time: 5, Service Time: 6
