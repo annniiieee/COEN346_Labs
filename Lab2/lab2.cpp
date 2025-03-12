@@ -2,306 +2,315 @@
 #include <fstream>
 #include <vector>
 #include <map>
-#include <queue>
-#include <string>
-#include <algorithm>
+#include <thread>
 #include <mutex>
-#include <limits>
+#include <condition_variable>
+#include <algorithm>
 #include <stdexcept>
+#include <sstream>
 
 
+// Process struct to store process information
 struct Process {
-    int id;             // Unique identifier for the process
-    int readyTime;      // Time when the process becomes ready
-    int burstTime;    // Total CPU time required
-    int remainingTime;  // Remaining CPU time needed
-    bool started;       // Whether process has started execution
-    bool finished;      // Whether process has completed execution
-
-    Process(int id, int readyTime, int burstTime) :
-        id(id), readyTime(readyTime), burstTime(burstTime),
-        remainingTime(burstTime), started(false), finished(false) {}
+    int id, readyTime, serviceTime, remainingTime;
+    bool started, finished;
+    Process(int id, int readyTime, int serviceTime) :
+        id(id), readyTime(readyTime), serviceTime(serviceTime),
+        remainingTime(serviceTime), started(false), finished(false) {}
 };
-struct User {
-    std::string name;               // Username
-    std::vector<Process> processes; // Processes owned by this user
 
+// User struct to store user information and their processes
+struct User {
+    std::string name;
+    std::vector<Process> processes;
     User(const std::string& name) : name(name) {}
 };
 
+// Scheduler class to simulate process scheduling
 class Scheduler {
 private:
-    int timeQuantum;                // Time quantum for round-robin scheduling
-    std::vector<User> users;        // List of users in the system
-    std::ofstream outputFile;       // Output file stream
-    int currentTime;                // Current simulation time
-    std::mutex fileMutex;           // Mutex for thread-safe file operations
+    int timeQuantum, currentTime;
+    std::vector<User> users;
+    std::ofstream outputFile;
+    std::mutex fileMutex, mtx;
+    std::condition_variable cv;
 
 public:
-    // Constructor for Scheduler
+    // Constructor to read input file and open output file
     Scheduler(const std::string& inputFile, const std::string& outputFile) : currentTime(1) {
-        // Open output file
         this->outputFile.open(outputFile);
-        if (!this->outputFile.is_open()) {
-            throw std::runtime_error("Error opening output file: " + outputFile);
-        }
-        
-        // Read input file configuration
-        try {
-            readInputFile(inputFile);
-        } catch (const std::exception& e) {
-            // Close output file if input file reading fails
-            if (this->outputFile.is_open()) {
-                this->outputFile.close();
-            }
-            throw; // Re-throw the exception
-        }
+        readInputFile(inputFile);
     }
 
-   
-     // Destructor for Scheduler
-     // Ensures output file is properly closed
+    // Destructor to close output file
     ~Scheduler() {
         if (outputFile.is_open()) {
             outputFile.close();
         }
     }
 
-    /**
-     * @brief Reads scheduling configuration from input file
-     * @param filename Path to the input file
-     * @throws std::runtime_error If input file cannot be opened or has invalid format
-     */
+    // Read input file and store user and process information
     void readInputFile(const std::string& filename) {
         std::ifstream file(filename);
         if (!file.is_open()) {
             throw std::runtime_error("Error opening input file: " + filename);
         }
+        
+        // Check if file is empty
+        if (file.peek() == std::ifstream::traits_type::eof()) {
+            throw std::runtime_error("Input file is empty: " + filename);
+        }
 
         // Read time quantum
-        if (!(file >> timeQuantum)) {
-            file.close();
-            throw std::runtime_error("Error reading time quantum from input file");
-        }
+        std::string line;
+        bool timeQuantumRead = false;
 
-        // Validate time quantum
-        if (timeQuantum <= 0) {
-            file.close();
-            throw std::runtime_error("Invalid time quantum: must be positive");
-        }
+        // validating the time quantum
+        while (std::getline(file, line)) {
+            if (line.empty()) continue;  // Skip empty lines
 
-        std::string userName;
-        int numProcesses;
-
-        // Read user and process information
-        while (file >> userName >> numProcesses) {
-            // Validate number of processes
-            if (numProcesses <= 0) {
-                file.close();
-                throw std::runtime_error("Invalid number of processes for user " + userName);
+            std::istringstream iss(line);
+            if (!(iss >> timeQuantum)) {
+                throw std::runtime_error("Invalid time quantum format in input file.");
             }
 
+            if (timeQuantum <= 0) {
+                throw std::runtime_error("Time quantum must be a positive integer.");
+            }
+
+            timeQuantumRead = true;
+            break;
+        }
+
+        if (!timeQuantumRead) {
+            throw std::runtime_error("Missing time quantum in input file.");
+        }
+
+        // Read user and process information
+        std::string userName;
+        int numProcesses;
+        
+        // reads and validates the user name and process count
+        while (file >> userName >> numProcesses) {
+            if (userName.empty()) {
+                throw std::runtime_error("Empty user name detected.");
+            }
+
+            if (numProcesses < 0) {
+                throw std::runtime_error("Invalid process count for user " + userName + ": cannot be negative.");
+            }
+
+            // Create user object and read process information to then store in the user object
             User user(userName);
 
             for (int i = 0; i < numProcesses; i++) {
-                int readyTime, burstTime;
-                
-                // Read process details
-                if (!(file >> readyTime >> burstTime)) {
-                    file.close();
-                    throw std::runtime_error("Error reading process details for user " + userName);
+                int readyTime, serviceTime;
+                bool processInfoRead = false;
+
+                while (std::getline(file, line)) {
+                    if (line.empty()) continue; // Skip empty lines
+
+                    std::istringstream iss(line);
+                    if (!(iss >> readyTime >> serviceTime)) {
+                        throw std::runtime_error("Invalid process details format for user " + userName + ", process " + std::to_string(i));
+                    }
+
+                    // Validate process times
+                    if (readyTime < 0) {
+                        throw std::runtime_error("Ready time must be non-negative for user " + userName + ", process " + std::to_string(i));
+                    }
+
+                    if (serviceTime <= 0) {
+                        throw std::runtime_error("Service time must be positive for user " + userName + ", process " + std::to_string(i));
+                    }
+
+                    processInfoRead = true;
+                    break;
                 }
-                
-                // Validate process parameters
-                if (readyTime < 0) {
-                    file.close();
-                    throw std::runtime_error("Invalid ready time for process " + std::to_string(i) + 
-                                            " of user " + userName);
+
+                if (!processInfoRead) {
+                    throw std::runtime_error("Missing process details for user " + userName + ", process " + std::to_string(i));
                 }
-                
-                if (burstTime <= 0) {
-                    file.close();
-                    throw std::runtime_error("Invalid service time for process " + std::to_string(i) + 
-                                            " of user " + userName);
-                }
-                
-                user.processes.push_back(Process(i, readyTime, burstTime));
+
+                // Add process to the user object
+                // emplace_back is used to construct the Process object in-place
+                user.processes.emplace_back(i, readyTime, serviceTime);
             }
 
+            // add the user to the list of users
             users.push_back(user);
         }
 
-        // Check if we have at least one user
+        // Check if we read any users
         if (users.empty()) {
-            file.close();
-            throw std::runtime_error("No users found in input file");
+            throw std::runtime_error("No valid users found in input file.");
         }
 
         file.close();
     }
 
-    /**
-     * @brief Writes a message to the output file in a thread-safe manner
-     * @param message The message to write
-     */
-    void writeToFile(const std::string& message) {
-        // Lock the mutex to ensure thread safety
+    // Write output message to file
+    // either a simple message (no process ready at this time) or a process status update
+    void writeToFile(int time, const std::string& messageOrUser, int processId = -1, const std::string& status = "") {
         std::lock_guard<std::mutex> lock(fileMutex);
-        
         if (outputFile.is_open()) {
-            outputFile << message << std::endl;
+            outputFile << "Time " << time;
+            
+            if (processId >= 0 && !status.empty()) {
+                // Process status update format
+                outputFile << ", User " << messageOrUser << ", Process " << processId << ", " << status;
+            } else {
+                // Simple message format
+                outputFile << ", " << messageOrUser;
+            }
+            
+            outputFile << std::endl;
         } else {
-            std::cerr << "Warning: Attempted to write to closed file: " << message << std::endl;
+            std::cerr << "Warning: Output file is closed!" << std::endl;
         }
     }
 
-    /**
-     * @brief Simulates the scheduling of processes
-     * @throws std::runtime_error If an error occurs during simulation
-     */
-    void simulateScheduling() {
-        bool allProcessesFinished = false;
-
-        try {
-            // Continue until all processes are finished
-            while (!allProcessesFinished) {
-                // Get ready users and their processes for the current cycle
-                std::vector<std::pair<int, int>> readyProcesses; // pair<user_index, process_index>
-
-                // Identify all processes that are ready to run at the current time
-                for (size_t userIndex = 0; userIndex < users.size(); userIndex++) {
-                    for (size_t processIndex = 0; processIndex < users[userIndex].processes.size(); processIndex++) {
-                        Process& process = users[userIndex].processes[processIndex];
-
-                        // Check if process is ready and not finished
-                        // add them in the ready processes list 
-                        if (process.readyTime <= currentTime && !process.finished && process.remainingTime > 0) {
-                            readyProcesses.push_back(std::make_pair(userIndex, processIndex));
-                        }
-                    }
-                }
-
-                // Handle the case where no processes are ready
-                if (readyProcesses.empty()) {
-                    // No ready processes, advance time to the next earliest ready time
-                    int nextReadyTime = std::numeric_limits<int>::max();
-                    for (const auto& user : users) {
-                        for (const auto& process : user.processes) {
-                            if (!process.finished && process.readyTime > currentTime && process.readyTime < nextReadyTime) {
-                                nextReadyTime = process.readyTime;
-                            }
-                        }
-                    }
-
-                    // Check if all processes are finished
-                    if (nextReadyTime == std::numeric_limits<int>::max()) {
-                        allProcessesFinished = true;
-                    } else {
-                        currentTime = nextReadyTime;
-                    }
-                    continue;
-                }
-
-                // Count the number of users with ready processes
-                std::map<int, bool> activeUsers;
-                for (const auto& process : readyProcesses) {
-                    activeUsers[process.first] = true; //user has at least 1 ready process
-                }
-                int numActiveUsers = activeUsers.size();
-
-                // Calculate time slices for each user and process
-                int timePerUser = timeQuantum / numActiveUsers;
-                
-                // Count number of processes per user
-                std::map<int, int> processesPerUser;
-                //readyProcesses = pair<user_index, process_index>
-                for (const auto& process : readyProcesses) {
-                    processesPerUser[process.first]++;
-                }
-
-                // Execute processes for this cycle
-                for (const auto& processInfo : readyProcesses) {
-                    int userIndex = processInfo.first;
-                    int processIndex = processInfo.second;
-                    Process& process = users[userIndex].processes[processIndex];
-
-                    // Calculate time slice for this process
-                    int timeSlice = timePerUser / processesPerUser[userIndex];
-                    // Ensure minimum time slice of 1
-                    timeSlice = std::max(1, timeSlice);
-
-                    // If this is the first time the process is running, mark it as started
-                    if (!process.started) {
-                        process.started = true;
-                        std::string message = "Time " + std::to_string(currentTime) + 
-                                             ", User " + users[userIndex].name +
-                                             ", Process " + std::to_string(process.id) + 
-                                             ", Started";
-                        writeToFile(message);
-                    }
-
-                    // Process is resumed
-                    std::string resumeMessage = "Time " + std::to_string(currentTime) + 
-                                              ", User " + users[userIndex].name +
-                                              ", Process " + std::to_string(process.id) + 
-                                              ", Resumed";
-                    writeToFile(resumeMessage);
-
-                    // Calculate actual execution time for this slice
-                    int executionTime = std::min(timeSlice, process.remainingTime);
-                    process.remainingTime -= executionTime;
-
-                    // Process is paused after execution
-                    std::string pauseMessage = "Time " + std::to_string(currentTime + executionTime) + 
-                                             ", User " + users[userIndex].name +
-                                             ", Process " + std::to_string(process.id) + 
-                                             ", Paused";
-                    writeToFile(pauseMessage);
-
-                    // If process is finished
-                    if (process.remainingTime == 0) {
-                        process.finished = true;
-                        std::string finishMessage = "Time " + std::to_string(currentTime + executionTime) + 
-                                                  ", User " + users[userIndex].name +
-                                                  ", Process " + std::to_string(process.id) + 
-                                                  ", Finished";
-                        writeToFile(finishMessage);
-                    }
-
-                    // Update currentTime for the next process
-                    currentTime += executionTime;
-                }
-
-                // Check if all processes are finished
-                allProcessesFinished = true;
-                for (const auto& user : users) {
-                    for (const auto& process : user.processes) {
-                        if (!process.finished) {
-                            allProcessesFinished = false;
-                            break;
-                        }
-                    }
-                    if (!allProcessesFinished) break;
+    // check if any process is ready at the current time
+    bool isAnyProcessReady(int time) {
+        for (const auto& user : users) {
+            for (const auto& process : user.processes) {
+                if (!process.finished && process.readyTime <= time) {
+                    return true;
                 }
             }
-        } catch (const std::exception& e) {
-            throw std::runtime_error("Simulation error: " + std::string(e.what()));
+        }
+        return false;
+    }
+
+    // check if all processes have finished
+    bool areAllProcessesFinished() {
+        for (const auto& user : users) {
+            for (const auto& process : user.processes) {
+                if (!process.finished) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    // get the earliest ready time of all processes
+    int getEarliestReadyTime() {
+        int earliestTime = -1;  // Initialize with -1 to indicate no value found yet
+        
+        for (const auto& user : users) {
+            for (const auto& process : user.processes) {
+                if (!process.finished && process.readyTime > currentTime) {
+                    // If this is the first valid process we've found, or it has an earlier ready time
+                    if (earliestTime == -1 || process.readyTime < earliestTime) {
+                        earliestTime = process.readyTime;
+                    }
+                }
+            }
+        }
+        
+        return earliestTime;  // Will be -1 if no valid process was found
+    }
+
+
+    // Simulating process execution
+    void processExecution(User& user, Process& process, int timeSlice) {
+        std::unique_lock<std::mutex> lock(mtx);
+        // cv is similar to doing the wait and signal from semaphores
+        cv.wait(lock, [&] { return process.readyTime <= currentTime; });
+
+        if (!process.started) {
+            process.started = true;
+            writeToFile(currentTime, user.name, process.id, "Started");
+        } else {
+            writeToFile(currentTime, user.name, process.id, "Resumed");
+        }
+
+        int executionTime = std::min(timeSlice, process.remainingTime);
+        process.remainingTime -= executionTime;
+        currentTime += executionTime;
+
+        if (process.remainingTime == 0) {
+            process.finished = true;
+            writeToFile(currentTime, user.name, process.id, "Finished");
+        } else {
+            writeToFile(currentTime, user.name, process.id, "Paused");
+        }
+
+        cv.notify_all();
+    }
+
+    // Simulate process scheduling
+    // first checks if any process is ready at the current time
+    // if not, advances time to the next ready process
+    // then iterates over all users and their processes to simulate process execution
+    // each process is executed in a separate thread
+    // the time slice for each process is calculated based on the number of active users
+    void simulateScheduling() {
+        // Initial idle time handling
+        if (!isAnyProcessReady(currentTime)) {
+            int nextReadyTime = getEarliestReadyTime();
+            if (nextReadyTime > 0) {
+                while (currentTime < nextReadyTime) {
+                    writeToFile(currentTime, "No process is ready at this time yet");
+                    currentTime++;
+                }
+            }
+        }
+
+        while (!areAllProcessesFinished()) {
+            std::vector<std::thread> threads;
+            std::map<int, int> activeUsers;
+
+            // Count active processes for each user
+            for (size_t userIdx = 0; userIdx < users.size(); userIdx++) {
+                for (auto& process : users[userIdx].processes) {
+                    if (!process.finished && process.readyTime <= currentTime) {
+                        activeUsers[userIdx]++;
+                    }
+                }
+            }
+
+            // If no active processes at current time, advance time to next ready process
+            if (activeUsers.empty()) {
+                int nextReadyTime = getEarliestReadyTime();
+                if (nextReadyTime > 0) {
+                    while (currentTime < nextReadyTime) {
+                        writeToFile(currentTime, "No process is ready at this time yet");
+                        currentTime++;
+                    }
+                    continue;  // Restart the loop with the new current time
+                } else {
+                    // No more processes will become ready, we're done
+                    break;
+                }
+            }
+
+            int numActiveUsers = activeUsers.size();
+            int timePerUser = timeQuantum / std::max(1, numActiveUsers);
+
+            for (const auto& [userIdx, processCount] : activeUsers) {
+                int timePerProcess = timePerUser / std::max(1, processCount);
+                for (auto& process : users[userIdx].processes) {
+                    if (!process.finished && process.readyTime <= currentTime) {
+                        threads.emplace_back(&Scheduler::processExecution, this, std::ref(users[userIdx]), std::ref(process), timePerProcess);
+                    }
+                }
+            }
+
+            for (auto& th : threads) {
+                if (th.joinable()) {
+                    th.join();
+                }
+            }
         }
     }
 };
 
-/**
- * @brief Main function
- * @return 0 on success, non-zero on failure
- */
 int main() {
     try {
-        // Create scheduler with input and output file paths
         Scheduler scheduler("input.txt", "output.txt");
-        
-        // Run the simulation
         scheduler.simulateScheduling();
-        
         std::cout << "Scheduling simulation completed successfully." << std::endl;
         return 0;
     } catch (const std::exception& e) {
