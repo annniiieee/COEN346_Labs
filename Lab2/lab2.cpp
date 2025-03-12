@@ -4,7 +4,6 @@
 #include <map>
 #include <thread>
 #include <mutex>
-#include <condition_variable>
 #include <algorithm>
 #include <stdexcept>
 #include <sstream>
@@ -33,7 +32,6 @@ private:
     std::vector<User> users;
     std::ofstream outputFile;
     std::mutex fileMutex, mtx;
-    std::condition_variable cv;
 
 public:
     // Constructor to read input file and open output file
@@ -215,29 +213,38 @@ public:
 
     // Simulating process execution
     void processExecution(User& user, Process& process, int timeSlice) {
-        std::unique_lock<std::mutex> lock(mtx);
-        // cv is similar to doing the wait and signal from semaphores
-        cv.wait(lock, [&] { return process.readyTime <= currentTime; });
-
-        if (!process.started) {
-            process.started = true;
-            writeToFile(currentTime, user.name, process.id, "Started");
-        } else {
-            writeToFile(currentTime, user.name, process.id, "Resumed");
+        bool ready = false;
+        while (!ready) {
+            {
+                std::lock_guard<std::mutex> lock(mtx);
+                ready = (process.readyTime <= currentTime);
+            }
         }
+        
+        // Now enter critical section using locks --> lock_guard
+        {
+            std::lock_guard<std::mutex> lock(mtx);
+            
+            if (!process.started) {
+                process.started = true;
+                writeToFile(currentTime, user.name, process.id, "Started");
+            } else {
+                writeToFile(currentTime, user.name, process.id, "Resumed");
+            }
 
-        int executionTime = std::min(timeSlice, process.remainingTime);
-        process.remainingTime -= executionTime;
-        currentTime += executionTime;
+            int executionTime = std::min(timeSlice, process.remainingTime);
+            process.remainingTime -= executionTime;
+            currentTime += executionTime;
 
-        if (process.remainingTime == 0) {
-            process.finished = true;
-            writeToFile(currentTime, user.name, process.id, "Finished");
-        } else {
-            writeToFile(currentTime, user.name, process.id, "Paused");
+            if (process.remainingTime == 0) {
+                process.finished = true;
+                writeToFile(currentTime, user.name, process.id, "Finished");
+            } else {
+                writeToFile(currentTime, user.name, process.id, "Paused");
+            }
         }
-
-        cv.notify_all();
+        
+        // release the mutex
     }
 
     // Simulate process scheduling
