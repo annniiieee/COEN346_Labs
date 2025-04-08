@@ -30,10 +30,6 @@ atomic<int> globalClock(1000); // Start the clock at 1000
 atomic<bool> stopClock(false);
 ofstream output("output.txt");
 
-// Random generator for time increments between operations
-mt19937 rng(std::random_device{}());
-uniform_int_distribution<int> dist(50, 200);
-
 void log(const string &msg)
 {
   lock_guard<mutex> lock(logMutex);
@@ -62,25 +58,25 @@ void evictIfNeeded()
   }
 }
 
-void Store(string id, unsigned int value)
+void Store(int pid, string id, unsigned int value)
 {
   lock_guard<mutex> lock(memMutex);
   evictIfNeeded();
   Page page = {id, value, globalClock.load()};
   mainMemory.push_back(page);
-  log("Store: Variable " + id + ", Value: " + to_string(value));
+  log("Process " + to_string(pid) + ", Store: Variable " + id + ", Value: " + to_string(value));
 }
 
-void Release(string id)
+void Release(int pid, string id)
 {
   lock_guard<mutex> lock(memMutex);
   mainMemory.remove_if([&](const Page &p)
                        { return p.id == id; });
   disk.erase(id);
-  log("Release: Variable " + id);
+  log("Process " + to_string(pid) + ", Release: Variable " + id);
 }
 
-void Lookup(string id)
+void Lookup(int pid, string id)
 {
   lock_guard<mutex> lock(memMutex);
   for (auto &p : mainMemory)
@@ -88,7 +84,7 @@ void Lookup(string id)
     if (p.id == id)
     {
       p.lastAccessTime = globalClock.load();
-      log("Lookup: Variable " + id + ", Value: " + to_string(p.value));
+      log("Process " + to_string(pid) + ", Lookup: Variable " + id + ", Value: " + to_string(p.value));
       return;
     }
   }
@@ -99,10 +95,10 @@ void Lookup(string id)
     page.lastAccessTime = globalClock.load();
     mainMemory.push_back(page);
     log("Memory Manager, SWAP: Variable " + id + " with memory");
-    log("Lookup: Variable " + id + ", Value: " + to_string(page.value));
+    log("Process " + to_string(pid) + ", Lookup: Variable " + id + ", Value: " + to_string(page.value));
     return;
   }
-  log("Lookup: Variable " + id + " not found");
+  log("Process " + to_string(pid) + ", Lookup: Variable " + id + " not found");
 }
 
 void runProcess(int pid, int start, int duration, vector<string> &commands)
@@ -129,19 +125,19 @@ void runProcess(int pid, int start, int duration, vector<string> &commands)
     if (op == "Store")
     {
       ss >> val;
-      Store(var, val);
+      Store(pid, var, val);
     }
     else if (op == "Release")
     {
-      Release(var);
+      Release(pid, var);
     }
     else if (op == "Lookup")
     {
-      Lookup(var);
+      Lookup(pid, var);
     }
 
-    // Random delay between operations to simulate varied execution times
-    this_thread::sleep_for(chrono::milliseconds(dist(rng)));
+    // Small random delay between operations
+    this_thread::sleep_for(chrono::milliseconds(50 + (rand() % 150)));
   }
 
   // Wait for process completion (duration is in seconds)
@@ -151,10 +147,15 @@ void runProcess(int pid, int start, int duration, vector<string> &commands)
 
 int main()
 {
+  // Seed random number generator
+  srand(time(nullptr));
+
+  // Read memory configuration
   ifstream memFile("memconfig.txt");
   memFile >> mainMemorySize;
   memFile.close();
 
+  // Read process information
   ifstream procFile("processes.txt");
   int cores, processCount;
   procFile >> cores >> processCount;
@@ -170,33 +171,45 @@ int main()
   }
   procFile.close();
 
-  // Read all commands from commands.txt
+  // Read commands and distribute to processes
+  // First, sort processes by start time
+  vector<int> processIndices(processCount);
+  for (int i = 0; i < processCount; i++)
+  {
+    processIndices[i] = i;
+  }
+  sort(processIndices.begin(), processIndices.end(),
+       [&procTimes](int a, int b)
+       { return procTimes[a].first < procTimes[b].first; });
+
+  // Read commands from file
   vector<string> allCommands;
   ifstream cmdFile("commands.txt");
   string line;
   while (getline(cmdFile, line))
   {
-    allCommands.push_back(line);
+    if (!line.empty())
+    {
+      allCommands.push_back(line);
+    }
   }
   cmdFile.close();
 
-  // Assign specific commands to specific processes
-  // From the output you showed, it looks like:
-  // Process 2 (starts at 1000): Store 1 5, Store 2 3
-  // Process 1 (starts at 2000): Store 3 7, Lookup 3, Lookup 2
-  // Process 3 (starts at 4000): Release 1, Store 1 8, Lookup 1
+  // Distribute commands to processes in order of their start times
+  int commandsPerProcess = allCommands.size() / processCount;
+  int remainingCommands = allCommands.size() % processCount;
 
-  // For this test case, I'll hardcode according to the expected output:
-  procCommands[1].push_back("Store 1 5"); // Process 2
-  procCommands[1].push_back("Store 2 3"); // Process 2
+  int cmdIndex = 0;
+  for (int i = 0; i < processCount; i++)
+  {
+    int procIdx = processIndices[i];
+    int cmdsForThisProcess = commandsPerProcess + (i < remainingCommands ? 1 : 0);
 
-  procCommands[0].push_back("Store 3 7"); // Process 1
-  procCommands[0].push_back("Lookup 3");  // Process 1
-  procCommands[0].push_back("Lookup 2");  // Process 1
-
-  procCommands[2].push_back("Release 1"); // Process 3
-  procCommands[2].push_back("Store 1 8"); // Process 3
-  procCommands[2].push_back("Lookup 1");  // Process 3
+    for (int j = 0; j < cmdsForThisProcess && cmdIndex < allCommands.size(); j++)
+    {
+      procCommands[procIdx].push_back(allCommands[cmdIndex++]);
+    }
+  }
 
   // Start the clock thread
   thread clk(clockThread);
