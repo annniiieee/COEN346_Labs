@@ -1,16 +1,16 @@
-Clock: 100, Process 2: Started.
-Clock: 100, Store: Variable 2, Value: 3
-Clock: 110, Lookup: Variable 2, Value: 3
-Clock: 120, Lookup: Variable 1 not found
-Clock: 150, Process 2: Finished.
-Clock: 200, Process 1: Started.
-Clock: 200, Store: Variable 1, Value: 5
-Clock: 210, Lookup: Variable 3 not found
-Clock: 220, Memory Manager, SWAP: Variable 2 with disk
-Clock: 220, Store: Variable 1, Value: 8
-Clock: 250, Process 1: Finished.
-Clock: 400, Process 3: Started.
-Clock: 400, Memory Manager, SWAP: Variable 1 with disk
-Clock: 400, Store: Variable 3, Value: 7
-Clock: 410, Release: Variable 1
-Clock: 440, Process 3: Finished.
+Clock: 1000, Process 2: Started.
+Clock: 1000, Store: Variable 1, Value: 5
+Clock: 1010, Store: Variable 2, Value: 3
+Clock: 1210, Process 2: Finished.
+Clock: 2000, Process 1: Started.
+Clock: 2000, Memory Manager, SWAP: Variable 1 with disk
+Clock: 2000, Store: Variable 3, Value: 7
+Clock: 2010, Lookup: Variable 3, Value: 7
+Clock: 2020, Lookup: Variable 2, Value: 3
+Clock: 2300, Process 1: Finished.
+Clock: 4000, Process 3: Started.
+Clock: 4000, Release: Variable 1
+Clock: 4010, Memory Manager, SWAP: Variable 3 with disk
+Clock: 4010, Store: Variable 1, Value: 8
+Clock: 4020, Lookup: Variable 1, Value: 8
+Clock: 4300, Process 3: Finished.
