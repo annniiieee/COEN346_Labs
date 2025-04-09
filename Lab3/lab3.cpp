@@ -15,6 +15,8 @@
 
 using namespace std;
 
+// Structure representing a memory page
+// Includes the variable ID, its value, and the last time it was accessed
 struct Page
 {
   string id;
@@ -22,14 +24,17 @@ struct Page
   int lastAccessTime;
 };
 
+// Global memory and synchronization variables
 int mainMemorySize;
 list<Page> mainMemory;
 unordered_map<string, Page> disk;
 mutex memMutex, logMutex;
-atomic<int> globalClock(1000); // Start the clock at 1000
+atomic<int> globalClock(1000);
 atomic<bool> stopClock(false);
 ofstream output("output.txt");
 
+// Thread-safe logging function
+// Logs events with the current clock value
 void log(const string &msg)
 {
   lock_guard<mutex> lock(logMutex);
@@ -37,36 +42,53 @@ void log(const string &msg)
   output.flush();
 }
 
+// Clock thread function
+// Increments the global clock every 100 ms by 10 units
 void clockThread()
 {
   while (!stopClock)
   {
     this_thread::sleep_for(chrono::milliseconds(100));
-    globalClock += 10; // Keep consistent increment of 10 units
+    globalClock += 10;
   }
 }
 
-void evictIfNeeded()
+// Eviction function using LRU policy
+// If memory is full, evicts the least recently used page
+// Returns the ID of the evicted page
+string evictIfNeeded(const string &incomingVar = "")
 {
   if (mainMemory.size() >= mainMemorySize)
   {
-    auto lru = std::min_element(mainMemory.begin(), mainMemory.end(), [](const Page &a, const Page &b)
-                                { return a.lastAccessTime < b.lastAccessTime; });
-    log("Memory Manager, SWAP: Variable " + lru->id + " with disk");
-    disk[lru->id] = *lru;
+    auto lru = min_element(mainMemory.begin(), mainMemory.end(), [](const Page &a, const Page &b)
+                           { return a.lastAccessTime < b.lastAccessTime; });
+    string swappedOut = lru->id;
+    disk[swappedOut] = *lru;
     mainMemory.erase(lru);
+    return swappedOut;
   }
+  return "";
 }
 
+// Store operation
+// Adds a variable to memory, evicting if necessary
 void Store(int pid, string id, unsigned int value)
 {
   lock_guard<mutex> lock(memMutex);
-  evictIfNeeded();
+
+  string swappedOut = evictIfNeeded(id);
+
   Page page = {id, value, globalClock.load()};
   mainMemory.push_back(page);
+
   log("Process " + to_string(pid) + ", Store: Variable " + id + ", Value: " + to_string(value));
+
+  if (!swappedOut.empty())
+    log("Memory Manager, SWAP: Variable " + id + " with Variable " + swappedOut);
 }
 
+// Release operation
+// Removes a variable from both memory and disk
 void Release(int pid, string id)
 {
   lock_guard<mutex> lock(memMutex);
@@ -76,6 +98,9 @@ void Release(int pid, string id)
   log("Process " + to_string(pid) + ", Release: Variable " + id);
 }
 
+// Lookup operation
+// Searches for a variable in memory or disk
+// If found on disk, it is brought back into memory
 void Lookup(int pid, string id)
 {
   lock_guard<mutex> lock(memMutex);
@@ -90,24 +115,28 @@ void Lookup(int pid, string id)
   }
   if (disk.count(id))
   {
-    evictIfNeeded();
+    string swappedOut = evictIfNeeded(id);
     Page page = disk[id];
     page.lastAccessTime = globalClock.load();
     mainMemory.push_back(page);
-    log("Memory Manager, SWAP: Variable " + id + " with memory");
+    if (!swappedOut.empty())
+    {
+      log("Memory Manager, SWAP: Variable " + id + " with Variable " + swappedOut);
+    }
     log("Process " + to_string(pid) + ", Lookup: Variable " + id + ", Value: " + to_string(page.value));
     return;
   }
   log("Process " + to_string(pid) + ", Lookup: Variable " + id + " not found");
 }
 
+// Thread function that simulates the lifecycle of a process
+// Executes commands between its start and end time, respecting clock
 void runProcess(int pid, int start, int duration, vector<string> &commands)
 {
-  // For process with start time 1, it should start at time 1000
-  // For start time 2, it should start at 2000, etc.
   int startTimeMs = start * 1000;
+  int endTimeMs = startTimeMs + duration * 1000;
 
-  // Wait until global clock reaches the process start time
+  // Wait until the global clock reaches the process's start time
   while (globalClock < startTimeMs)
   {
     this_thread::sleep_for(chrono::milliseconds(10));
@@ -136,26 +165,36 @@ void runProcess(int pid, int start, int duration, vector<string> &commands)
       Lookup(pid, var);
     }
 
-    // Small random delay between operations
-    this_thread::sleep_for(chrono::milliseconds(50 + (rand() % 150)));
+    // Random delay between commands to simulate processing time
+    int delay = 150 + (rand() % 200);
+    this_thread::sleep_for(chrono::milliseconds(delay));
+
+    // Stop early if we've reached or exceeded the process end time
+    if (globalClock >= endTimeMs)
+      break;
   }
 
-  // Wait for process completion (duration is in seconds)
-  this_thread::sleep_for(chrono::milliseconds(duration * 1000));
+  // Ensure the process runs for the full virtual time
+  while (globalClock < endTimeMs)
+  {
+    this_thread::sleep_for(chrono::milliseconds(10));
+  }
+
   log("Process " + to_string(pid) + ": Finished.");
 }
 
+// Main function
+// Initializes memory, reads configs, assigns commands to processes, and launches threads
 int main()
 {
-  // Seed random number generator
-  srand(time(nullptr));
+  srand(time(nullptr)); // Initialize random seed
 
-  // Read memory configuration
+  // Read main memory size from memconfig.txt
   ifstream memFile("memconfig.txt");
   memFile >> mainMemorySize;
   memFile.close();
 
-  // Read process information
+  // Read process configuration from processes.txt
   ifstream procFile("processes.txt");
   int cores, processCount;
   procFile >> cores >> processCount;
@@ -171,18 +210,16 @@ int main()
   }
   procFile.close();
 
-  // Read commands and distribute to processes
-  // First, sort processes by start time
+  // Sort processes by start time to assign commands fairly
   vector<int> processIndices(processCount);
   for (int i = 0; i < processCount; i++)
   {
     processIndices[i] = i;
   }
-  sort(processIndices.begin(), processIndices.end(),
-       [&procTimes](int a, int b)
+  sort(processIndices.begin(), processIndices.end(), [&procTimes](int a, int b)
        { return procTimes[a].first < procTimes[b].first; });
 
-  // Read commands from file
+  // Read all commands from commands.txt
   vector<string> allCommands;
   ifstream cmdFile("commands.txt");
   string line;
@@ -195,7 +232,7 @@ int main()
   }
   cmdFile.close();
 
-  // Distribute commands to processes in order of their start times
+  // Distribute commands to processes as evenly as possible
   int commandsPerProcess = allCommands.size() / processCount;
   int remainingCommands = allCommands.size() % processCount;
 
@@ -211,7 +248,7 @@ int main()
     }
   }
 
-  // Start the clock thread
+  // Start the global clock thread
   thread clk(clockThread);
 
   // Launch process threads
@@ -220,7 +257,7 @@ int main()
     processThreads.emplace_back(runProcess, i + 1, procTimes[i].first, procTimes[i].second, ref(procCommands[i]));
   }
 
-  // Wait for all processes to complete
+  // Wait for all process threads to complete
   for (auto &t : processThreads)
   {
     t.join();
@@ -231,7 +268,7 @@ int main()
   clk.join();
   output.close();
 
-  // Write virtual memory content to file
+  // Write contents of virtual memory (disk) to vm.txt
   ofstream diskFile("vm.txt");
   for (auto &[k, v] : disk)
   {
